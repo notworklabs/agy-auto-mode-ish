@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "agy-auto-mode-ish Project Guardrails Policy",
+  "description": "Per-project guardrails layered on top of agy-auto-mode-ish universal defaults (.agents/guardrails.json).",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "deny_paths": {
+      "type": "array",
+      "description": "Workspace-relative file or directory paths (trailing slash for directories) blocked from reading and writing.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "ask_write_paths": {
+      "type": "array",
+      "description": "Workspace-relative paths where reads are auto-approved but writes/edits require explicit confirmation (force_ask).",
+      "items": {
+        "type": "string"
+      }
+    },
+    "deny_commands": {
+      "type": "array",
+      "description": "Command regex patterns that are immediately blocked (deny).",
+      "items": {
+        "type": "object",
+        "required": [
+          "pattern",
+          "reason"
+        ],
+        "properties": {
+          "pattern": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "ask_commands": {
+      "type": "array",
+      "description": "Command regex patterns that always prompt the user for confirmation (force_ask).",
+      "items": {
+        "type": "object",
+        "required": [
+          "pattern",
+          "reason"
+        ],
+        "properties": {
+          "pattern": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "allow_commands": {
+      "type": "array",
+      "description": "Command regex patterns that are auto-approved when executed inside the workspace and no deny/ask rule matches.",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": false
+}

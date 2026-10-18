@@ -1,0 +1,78 @@
+{
+  "$schema": "./guardrails.schema.json",
+  "description": "Universal baseline policy for agy-auto-mode-ish.",
+  "deny_paths": [
+    ".env",
+    ".git/config",
+    ".git/hooks"
+  ],
+  "ask_write_paths": [
+    ".agents/",
+    ".agent/",
+    "_agents/",
+    "_agent/"
+  ],
+  "deny_commands": [
+    {
+      "pattern": "(?:^|[\\s;|&()])(?:cat|less|more|head|tail|grep|awk|sed|cp|mv)\\s+[^\\n;|&]*\\b\\.env\\b(?!\\.example|\\.sample|\\.template)",
+      "reason": "Reading or copying private `.env` secrets via shell commands is blocked."
+    }
+  ],
+  "delete_or_destructive_commands": [
+    {
+      "pattern": "(?:^|[\\s;|&()])(?:rm|rmdir|unlink|shred)\\b",
+      "reason": "File or directory removal requires confirmation."
+    },
+    {
+      "pattern": "\\bfind\\b[^\\n;|&]*\\s-delete\\b",
+      "reason": "`find -delete` requires confirmation."
+    },
+    {
+      "pattern": "\\bgit\\s+clean\\b",
+      "reason": "`git clean` deletes untracked files and requires confirmation."
+    },
+    {
+      "pattern": "\\bgit\\s+reset\\s+--hard\\b",
+      "reason": "`git reset --hard` discards uncommitted work and requires confirmation."
+    },
+    {
+      "pattern": "\\bgit\\s+checkout\\s+--\\b",
+      "reason": "Discarding file changes via `git checkout --` requires confirmation."
+    },
+    {
+      "pattern": "\\bgit\\s+restore\\b",
+      "reason": "Discarding file changes via `git restore` requires confirmation."
+    },
+    {
+      "pattern": "\\bgit\\s+branch\\s+-D\\b",
+      "reason": "Force-deleting a Git branch requires confirmation."
+    },
+    {
+      "pattern": "\\bgit\\s+push\\b[^\\n;|&]*(?:--force|-f)\\b",
+      "reason": "Force-pushing a Git branch requires confirmation."
+    }
+  ],
+  "host_system_commands": [
+    {
+      "pattern": "(?:^|[\\s;|&()])(?:sudo|su|doas|pkexec|apt|apt-get|dpkg|snap|flatpak|dnf|yum|pacman|brew|systemctl|service|crontab|mount|umount|chown|chgrp|chmod|ufw|iptables|nft|reboot|shutdown|poweroff|useradd|usermod|userdel|groupadd|killall|pkill)\\b",
+      "reason": "Host system, permission, service, or package changes outside containers require confirmation."
+    },
+    {
+      "pattern": "\\b(?:npm|pnpm|yarn)\\s+(?:install|i|add)\\s+(?:-g|--global)\\b",
+      "reason": "Global Node package installation on the host system requires confirmation."
+    },
+    {
+      "pattern": "\\bpip3?\\s+install\\b",
+      "reason": "Direct `pip install` (outside `uv` / `.venv`) requires confirmation."
+    }
+  ],
+  "allow_commands": [
+    "^git\\s+(?:status|diff|log|show|branch|rev-parse|add|commit|stash)\\b",
+    "^(?:ls|pwd|which|echo|cat|head|tail|wc|stat|sha256sum|python3\\s+-m\\s+py_compile|python3\\s+-m\\s+unittest)\\b",
+    "^python3\\s+[^\\n;|&]*permission_gate\\.py\\s+--self-test\\b",
+    "^(?:\\.venv/bin/|uv\\s+run\\s+)?(?:pytest|ruff)\\b",
+    "^npm\\s+(?:test|run\\s+build|run\\s+lint|ci)\\b",
+    "^cargo\\s+(?:test|check|clippy|build)\\b",
+    "^go\\s+(?:test|vet|build)\\b"
+  ]
+}
