@@ -100,19 +100,20 @@ See [`examples/guardrails.example.json`](examples/guardrails.example.json) and [
   ],
   "deny_commands": [
     {
-      "pattern": "\bdocker(?:\s+compose|-compose)\b[^\n;|&]*\bdown\b[^\n;|&]*(?:-v\b|--volumes\b)",
+      "pattern": "\\bdocker(?:\\s+compose|-compose)\\b[^\\n;|&]*\\bdown\\b[^\\n;|&]*(?:-v\\b|--volumes\\b)",
       "reason": "Destroying named Docker volumes with `down -v` is blocked."
     }
   ],
   "ask_commands": [
     {
-      "pattern": "\bdocker(?:\s+compose|-compose)\s+(?:up|down|stop|restart|rm|kill)\b",
+      "pattern": "\\bdocker(?:\\s+compose|-compose)\\s+(?:up|down|stop|restart|rm|kill)\\b",
       "reason": "Starting, stopping, or recreating Docker Compose services requires confirmation."
     }
   ],
   "allow_commands": [
-    "^(?:cd\s+backend\s*&&\s*)?(?:\.venv/bin/|uv\s+run\s+)?(?:pytest|ruff)\b",
-    "^(?:cd\s+frontend\s*&&\s*)?npm\s+(?:test|run\s+build|run\s+lint|ci)\b"
+    "^cd\\s+(?:backend|frontend)$",
+    "^(?:\\.venv/bin/|uv\\s+run\\s+)?(?:pytest|ruff)\\b",
+    "^npm\\s+(?:test|run\\s+build|run\\s+lint|ci)\\b"
   ]
 }
 ```

@@ -14,7 +14,7 @@
   ],
   "deny_commands": [
     {
-      "pattern": "(?:^|[\\s;|&()])(?:cat|less|more|head|tail|grep|awk|sed|cp|mv)\\s+[^\\n;|&]*\\b\\.env\\b(?!\\.example|\\.sample|\\.template)",
+      "pattern": "(?:^|[\\s;|&()])(?:cat|less|more|head|tail|grep|awk|sed|cp|mv)\\s+[^\\n;|&]*(?<=[\\s/\\\\])\\.env\\b(?!\\.example|\\.sample|\\.template)",
       "reason": "Reading or copying private `.env` secrets via shell commands is blocked."
     }
   ],

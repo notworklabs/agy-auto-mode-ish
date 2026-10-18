@@ -70,6 +70,12 @@
       "items": {
         "type": "string"
       }
+    },
+    "delete_or_destructive_commands": {
+      "$ref": "#/properties/ask_commands"
+    },
+    "host_system_commands": {
+      "$ref": "#/properties/ask_commands"
     }
   },
   "additionalProperties": false

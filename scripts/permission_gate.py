@@ -54,13 +54,20 @@ class Policy:
     allow_commands: list[re.Pattern[str]] = field(default_factory=list)
 
 
+class PolicyConfigError(ValueError):
+    """A policy file could not be loaded safely."""
+
+
 def _compile_rule_list(items: list[dict[str, str]]) -> list[CompiledRule]:
+    if not isinstance(items, list):
+        raise ValueError("Command rules must be an array.")
     compiled: list[CompiledRule] = []
     for item in items:
-        pat = item.get("pattern")
-        reason = item.get("reason", "Action requires review per guardrails policy.")
-        if pat:
-            compiled.append(CompiledRule(pattern=re.compile(pat), reason=reason))
+        if not isinstance(item, dict) or not all(
+            isinstance(item.get(key), str) for key in ("pattern", "reason")
+        ):
+            raise ValueError("Command rules need string pattern and reason fields.")
+        compiled.append(CompiledRule(pattern=re.compile(item["pattern"]), reason=item["reason"]))
     return compiled
 
 
@@ -68,36 +75,30 @@ def load_merged_policy(workspace_roots: list[Path]) -> Policy:
     """Loads `default_policy.json` and merges `<workspace>/.agents/guardrails.json`."""
     policy = Policy()
 
-    if DEFAULT_POLICY_PATH.is_file():
-        raw_default = json.loads(DEFAULT_POLICY_PATH.read_text(encoding="utf-8"))
-        policy.deny_paths.extend(raw_default.get("deny_paths", []))
-        policy.ask_write_paths.extend(raw_default.get("ask_write_paths", []))
-        policy.deny_commands.extend(_compile_rule_list(raw_default.get("deny_commands", [])))
-        policy.ask_commands.extend(
-            _compile_rule_list(raw_default.get("delete_or_destructive_commands", []))
-        )
-        policy.ask_commands.extend(_compile_rule_list(raw_default.get("host_system_commands", [])))
-        policy.ask_commands.extend(_compile_rule_list(raw_default.get("ask_commands", [])))
-        for pat in raw_default.get("allow_commands", []):
-            policy.allow_commands.append(re.compile(pat))
-
-    for root in workspace_roots:
-        project_cfg_path = root / ".agents" / "guardrails.json"
-        if project_cfg_path.is_file():
+    config_paths = [DEFAULT_POLICY_PATH] + [
+        root / ".agents" / "guardrails.json" for root in workspace_roots
+    ]
+    for config_path in config_paths:
+        try:
             try:
-                raw_proj = json.loads(project_cfg_path.read_text(encoding="utf-8"))
-            except Exception:
+                config_text = config_path.read_text(encoding="utf-8")
+            except FileNotFoundError:
                 continue
-            for p in raw_proj.get("deny_paths", []):
-                if p not in policy.deny_paths:
-                    policy.deny_paths.append(p)
-            for p in raw_proj.get("ask_write_paths", []):
-                if p not in policy.ask_write_paths:
-                    policy.ask_write_paths.append(p)
-            policy.deny_commands.extend(_compile_rule_list(raw_proj.get("deny_commands", [])))
-            policy.ask_commands.extend(_compile_rule_list(raw_proj.get("ask_commands", [])))
-            for pat in raw_proj.get("allow_commands", []):
-                policy.allow_commands.append(re.compile(pat))
+            raw = json.loads(config_text)
+            if not isinstance(raw, dict):
+                raise ValueError("Policy must be a JSON object.")
+            for key in ("deny_paths", "ask_write_paths", "allow_commands"):
+                values = raw.get(key, [])
+                if not isinstance(values, list) or not all(isinstance(p, str) for p in values):
+                    raise ValueError(f"{key} must be an array of strings.")
+            policy.deny_paths.extend(raw.get("deny_paths", []))
+            policy.ask_write_paths.extend(raw.get("ask_write_paths", []))
+            policy.deny_commands.extend(_compile_rule_list(raw.get("deny_commands", [])))
+            for key in ("delete_or_destructive_commands", "host_system_commands", "ask_commands"):
+                policy.ask_commands.extend(_compile_rule_list(raw.get(key, [])))
+            policy.allow_commands.extend(re.compile(pat) for pat in raw.get("allow_commands", []))
+        except Exception as exc:
+            raise PolicyConfigError(f"Could not load guardrails config `{config_path}`: {exc}") from exc
 
     return policy
 
@@ -224,6 +225,69 @@ def references_outside_workspace(
     return None
 
 
+def check_shell_path_policy(
+    cmd: str,
+    cwd: Path,
+    workspace_roots: list[Path],
+    policy: Policy,
+) -> tuple[str, str] | None:
+    """Check shell operands, including adjacent redirections and option values."""
+    lexer = shlex.shlex(cmd, posix=True, punctuation_chars=";&|<>")
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return ("ask", "Could not parse shell command; please review before execution.")
+
+    pending = None
+    write_target = False
+    command_start = True
+    cd_target = False
+    for token in tokens:
+        if token in {"&&", "||", ";", "|", "&"}:
+            command_start = True
+            cd_target = False
+            write_target = False
+            continue
+        if token and set(token) <= set("<>&|") and ("<" in token or ">" in token):
+            write_target = True
+            continue
+
+        is_cd = command_start and token == "cd"
+        command_start = False
+        cleaned = re.sub(r"^--[a-zA-Z0-9_-]+=", "", token)
+        if cleaned and (write_target or not cleaned.startswith("-")):
+            resolved = resolve_candidate_path(cleaned, cwd)
+            for root in workspace_roots:
+                if is_subpath(resolved, root):
+                    decision = check_workspace_rel_policy(resolved, root, policy, write_target)
+                    if decision is not None:
+                        if decision[0] == "deny":
+                            return decision
+                        pending = decision
+            if cd_target:
+                if not any(is_subpath(resolved, root) for root in workspace_roots):
+                    pending = ("force_ask", f"Command changes directory outside the workspace (`{resolved}`).")
+                cwd = resolved
+        cd_target = is_cd
+        write_target = False
+    return pending
+
+
+def shell_segments(cmd: str) -> list[str]:
+    """Only simple chains qualify for automatic approval."""
+    if any(char in cmd for char in ("$", "`", "<", ">", "\n", "\r", "(", ")")):
+        return []
+    segments = [segment.strip() for segment in re.split(r"&&|\|\||[;|&]", cmd) if segment.strip()]
+    # A directory change has a predictable effect on subsequent commands in an
+    # && chain. Other control operators need a full shell interpreter to track it.
+    if any(re.match(r"cd(?:\s|$)", segment) for segment in segments):
+        if re.search(r"\|\||[;|]|(?<!&)&(?!&)", cmd):
+            return []
+    return segments
+
+
 def evaluate_tool_call(data: dict[str, Any]) -> dict[str, Any]:
     raw_workspaces = data.get("workspacePaths") or []
     workspace_roots = [
@@ -239,7 +303,10 @@ def evaluate_tool_call(data: dict[str, Any]) -> dict[str, Any]:
             workspace_roots = [Path.cwd().resolve()]
 
     primary_root = workspace_roots[0]
-    policy = load_merged_policy(workspace_roots)
+    try:
+        policy = load_merged_policy(workspace_roots)
+    except PolicyConfigError as exc:
+        return {"decision": "force_ask", "reason": str(exc)}
 
     raw_artifact_dir = data.get("artifactDirectoryPath")
     artifact_dir = (
@@ -254,7 +321,7 @@ def evaluate_tool_call(data: dict[str, Any]) -> dict[str, Any]:
 
     # 1. Terminal commands
     if tool_name == "run_command" or "CommandLine" in args:
-        cmd = str(args.get("CommandLine") or "").strip()
+        cmd = str(args.get("CommandLine") or "")
         raw_cwd = str(args.get("Cwd") or str(primary_root)).strip()
         cwd = resolve_candidate_path(raw_cwd, primary_root)
 
@@ -270,17 +337,27 @@ def evaluate_tool_call(data: dict[str, Any]) -> dict[str, Any]:
             if rule.pattern.search(cmd):
                 return {"decision": "deny", "reason": rule.reason}
 
+        path_decision = check_shell_path_policy(cmd, cwd, workspace_roots, policy)
+        if path_decision is not None and path_decision[0] == "deny":
+            return {"decision": path_decision[0], "reason": path_decision[1]}
+
         for rule in policy.ask_commands:
             if rule.pattern.search(cmd):
                 return {"decision": "force_ask", "reason": rule.reason}
+
+        if path_decision is not None:
+            return {"decision": path_decision[0], "reason": path_decision[1]}
 
         outside_reason = references_outside_workspace(cmd, cwd, workspace_roots, artifact_dir)
         if outside_reason is not None:
             return {"decision": "force_ask", "reason": outside_reason}
 
-        for allow_pat in policy.allow_commands:
-            if allow_pat.search(cmd):
-                return {"decision": "auto_approve"}
+        segments = shell_segments(cmd)
+        if segments and all(
+            any(allow_pat.match(segment) for allow_pat in policy.allow_commands)
+            for segment in segments
+        ):
+            return {"decision": "auto_approve"}
 
         return {
             "decision": "ask",
@@ -376,6 +453,21 @@ def run_self_test(ws_path: Path) -> int:
             "auto_approve",
         ),
         (
+            "shell read .env blocked",
+            {"workspacePaths": [ws], "toolCall": {"name": "run_command", "args": {"Cwd": ws, "CommandLine": "cat .env"}}},
+            "deny",
+        ),
+        (
+            "shell read ./.env blocked",
+            {"workspacePaths": [ws], "toolCall": {"name": "run_command", "args": {"Cwd": ws, "CommandLine": "cat ./.env"}}},
+            "deny",
+        ),
+        (
+            "shell read .env.example allowed",
+            {"workspacePaths": [ws], "toolCall": {"name": "run_command", "args": {"Cwd": ws, "CommandLine": "cat .env.example"}}},
+            "auto_approve",
+        ),
+        (
             "write outside workspace blocked",
             {"workspacePaths": [ws], "toolCall": {"name": "write_to_file", "args": {"TargetFile": "/tmp/outside.txt"}}},
             "deny",
@@ -434,7 +526,13 @@ def main() -> None:
         )
         return
 
-    result = evaluate_tool_call(data)
+    try:
+        result = evaluate_tool_call(data)
+    except Exception:
+        result = {
+            "decision": "force_ask",
+            "reason": "Could not evaluate PreToolUse payload; confirmation is required.",
+        }
     sys.stdout.write(json.dumps(result) + "\n")
 
 

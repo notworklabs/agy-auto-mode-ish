@@ -22,8 +22,9 @@
     }
   ],
   "allow_commands": [
-    "^(?:cd\\s+backend\\s*&&\\s*)?(?:\\.venv/bin/|uv\\s+run\\s+)?(?:pytest|ruff)\\b",
-    "^(?:cd\\s+frontend\\s*&&\\s*)?npm\\s+(?:test|run\\s+build|run\\s+lint|ci)\\b",
+    "^cd\\s+(?:backend|frontend)$",
+    "^(?:\\.venv/bin/|uv\\s+run\\s+)?(?:pytest|ruff)\\b",
+    "^npm\\s+(?:test|run\\s+build|run\\s+lint|ci)\\b",
     "^docker(?:\\s+compose|-compose)\\s+(?:ps|logs|build|config|exec|run)\\b"
   ]
 }
