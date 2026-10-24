@@ -122,6 +122,49 @@ class PermissionGateTests(unittest.TestCase):
         (self.root / "alias").symlink_to(self.root / "secrets", target_is_directory=True)
         self.assert_decision("cat alias/token", "deny")
 
+    def test_shell_glob_matches_use_workspace_policy(self):
+        self.configure({"deny_paths": ["secrets/", "private.txt", "literal[1].txt"]})
+        for name in (".env.local", ".git/config", ".git/hooks/pre-commit",
+                     "secrets/token", "private.txt", "public.txt", "literal1.txt", "literal[1].txt"):
+            target = self.root / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.touch()
+        for cmd in (
+            "cat .e*", "cat .en?.local", "cat .[e]nv.local", "cat .git/con*",
+            "cat .git/hook?/pre-commit", "cat sec*/token", "cat priv?te.txt",
+            "git diff -- priva[t]e.txt", "cat --file=priv*.txt", "echo x >priva*",
+            "cat *.txt", "sudo cat priv*", "echo x >.agents/file; cat priv*",
+            f"cat {self.root}/priv*", "cat 'literal[1].txt'",
+        ):
+            with self.subTest(cmd=cmd):
+                self.assert_decision(cmd, "deny")
+
+    def test_shell_glob_matches_resolve_symlinks(self):
+        self.configure({"deny_paths": ["private.txt"]})
+        (self.root / "private.txt").touch()
+        (self.root / "alias.txt").symlink_to(self.root / "private.txt")
+        self.assert_decision("cat ali*", "deny")
+
+    def test_shell_globs_use_current_directory_after_cd(self):
+        self.configure({"deny_paths": ["backend/private.txt"]})
+        backend = self.root / "backend"
+        backend.mkdir()
+        (backend / "private.txt").touch()
+        self.assert_decision("cat priv*", "deny", backend)
+        self.assert_decision("cd backend && cat priv*", "deny")
+        self.assert_decision("cd back* && cat priv*", "deny")
+
+    def test_shell_globs_are_never_auto_approved(self):
+        self.configure({"allow_commands": [".*"]})
+        (self.root / "public.txt").touch()
+        for cmd in (
+            "cat pub*", "cat publi?.txt", "cat [p]ublic.txt", "cat missing*",
+            "cat missing?", "cat [m]issing", "git status && cat *.txt",
+        ):
+            with self.subTest(cmd=cmd):
+                self.assert_decision(cmd, "ask")
+        self.assert_decision("echo x >.ag*/guardrails.json", "force_ask")
+
     def test_redirections_to_guardrail_files_require_confirmation(self):
         for cmd in ("echo x >.agents/guardrails.json", "echo x >> .agents/guardrails.json",
                     "echo x 2>.agents/log", "cat < .agents/guardrails.json"):

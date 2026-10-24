@@ -20,6 +20,7 @@ CLI usage:
 
 from __future__ import annotations
 
+import glob
 import json
 import os
 import re
@@ -258,15 +259,21 @@ def check_shell_path_policy(
         command_start = False
         cleaned = re.sub(r"^--[a-zA-Z0-9_-]+=", "", token)
         if cleaned and (write_target or not cleaned.startswith("-")):
-            resolved = resolve_candidate_path(cleaned, cwd)
-            for root in workspace_roots:
-                if is_subpath(resolved, root):
-                    decision = check_workspace_rel_policy(resolved, root, policy, write_target)
-                    if decision is not None:
-                        if decision[0] == "deny":
-                            return decision
-                        pending = decision
-            if cd_target:
+            matches = []
+            if glob.has_magic(cleaned):
+                matches = glob.glob(os.path.expanduser(cleaned), root_dir=cwd)
+            # Retain literal-path checks for quoted operands and unmatched globs.
+            for candidate in [cleaned, *matches]:
+                resolved = resolve_candidate_path(candidate, cwd)
+                for root in workspace_roots:
+                    if is_subpath(resolved, root):
+                        decision = check_workspace_rel_policy(resolved, root, policy, write_target)
+                        if decision is not None:
+                            if decision[0] == "deny":
+                                return decision
+                            pending = decision
+            # Only a single directory match determines the subsequent cwd.
+            if cd_target and len(matches) <= 1:
                 if not any(is_subpath(resolved, root) for root in workspace_roots):
                     pending = ("force_ask", f"Command changes directory outside the workspace (`{resolved}`).")
                 cwd = resolved
@@ -277,7 +284,7 @@ def check_shell_path_policy(
 
 def shell_segments(cmd: str) -> list[str]:
     """Only simple chains qualify for automatic approval."""
-    if any(char in cmd for char in ("$", "`", "<", ">", "\n", "\r", "(", ")")):
+    if any(char in cmd for char in ("$", "`", "<", ">", "\n", "\r", "(", ")", "*", "?", "[", "]")):
         return []
     segments = [segment.strip() for segment in re.split(r"&&|\|\||[;|&]", cmd) if segment.strip()]
     # A directory change has a predictable effect on subsequent commands in an
