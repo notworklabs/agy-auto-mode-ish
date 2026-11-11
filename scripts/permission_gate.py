@@ -92,6 +92,8 @@ def load_merged_policy(workspace_roots: list[Path]) -> Policy:
             try:
                 config_text = config_path.read_text(encoding="utf-8")
             except FileNotFoundError:
+                if config_path == DEFAULT_POLICY_PATH:
+                    raise
                 continue
             raw = json.loads(config_text)
             if not isinstance(raw, dict):
@@ -468,14 +470,20 @@ def evaluate_tool_call(data: dict[str, Any]) -> dict[str, Any]:
 
         resolved = resolve_candidate_path(raw_target, primary_root)
 
+        workspace_decision: dict[str, Any] | None = None
         for root in workspace_roots:
             if is_subpath(resolved, root):
                 rel_decision = check_workspace_rel_policy(
                     resolved, root, policy, is_write=is_write
                 )
                 if rel_decision is not None:
-                    return {"decision": rel_decision[0], "reason": rel_decision[1]}
-                return {"decision": "auto_approve"}
+                    if rel_decision[0] == "deny":
+                        return {"decision": rel_decision[0], "reason": rel_decision[1]}
+                    workspace_decision = {"decision": rel_decision[0], "reason": rel_decision[1]}
+                elif workspace_decision is None:
+                    workspace_decision = {"decision": "auto_approve"}
+        if workspace_decision is not None:
+            return workspace_decision
 
         if artifact_dir is not None and is_subpath(resolved, artifact_dir):
             return {"decision": "auto_approve"}

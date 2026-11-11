@@ -36,7 +36,7 @@
       "reason": "`git reset --hard` discards uncommitted work and requires confirmation."
     },
     {
-      "pattern": "\\bgit\\s+checkout\\s+--\\b",
+      "pattern": "\\bgit\\s+checkout\\s+--(?=\\s|$)",
       "reason": "Discarding file changes via `git checkout --` requires confirmation."
     },
     {
@@ -48,8 +48,20 @@
       "reason": "Force-deleting a Git branch requires confirmation."
     },
     {
+      "pattern": "\\bgit\\s+stash\\s+(?:drop|clear)\\b",
+      "reason": "Deleting saved Git stashes requires confirmation."
+    },
+    {
       "pattern": "\\bgit\\s+push\\b[^\\n;|&]*(?:--force|-f)\\b",
       "reason": "Force-pushing a Git branch requires confirmation."
+    },
+    {
+      "pattern": "\\bgit\\s+stash\\s+(?:clear|drop)\\b",
+      "reason": "Deleting saved Git stashes requires confirmation."
+    },
+    {
+      "pattern": "\\bgit\\s+branch\\b[^\\n;|&]*\\s(?:-[A-Za-z]*[dD][A-Za-z]*|--delete)(?=\\s|$)",
+      "reason": "Deleting Git branches requires confirmation."
     }
   ],
   "host_system_commands": [
