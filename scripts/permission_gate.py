@@ -62,8 +62,7 @@ class PolicyConfigError(ValueError):
 def _compile_rule_list(items: list[dict[str, str]]) -> list[CompiledRule]:
     """Compile command patterns while retaining their decision reasons.
 
-    Raise ValueError for malformed rule lists or re.error for invalid
-    regular expressions.
+    Raise ValueError for invalid rule structure or re.error for invalid patterns.
     """
     if not isinstance(items, list):
         raise ValueError("Command rules must be an array.")
@@ -78,11 +77,11 @@ def _compile_rule_list(items: list[dict[str, str]]) -> list[CompiledRule]:
 
 
 def load_merged_policy(workspace_roots: list[Path]) -> Policy:
-    """Append default_policy.json and each <workspace>/.agents/guardrails.json.
+    """Load default_policy.json and append each workspace's .agents/guardrails.json.
 
-    Missing files, including the baseline, are skipped. Existing files with
-    unreadable content, invalid JSON, malformed rules, or invalid regexes raise
-    PolicyConfigError identifying the file; no partial policy is returned.
+    Missing files, including the defaults file, are skipped. Other read, JSON,
+    validation, or regex errors raise PolicyConfigError with the offending path;
+    no partial policy is returned.
     """
     policy = Policy()
 
@@ -94,6 +93,8 @@ def load_merged_policy(workspace_roots: list[Path]) -> Policy:
             try:
                 config_text = config_path.read_text(encoding="utf-8")
             except FileNotFoundError:
+                if config_path == DEFAULT_POLICY_PATH:
+                    raise
                 continue
             raw = json.loads(config_text)
             if not isinstance(raw, dict):
@@ -115,7 +116,7 @@ def load_merged_policy(workspace_roots: list[Path]) -> Policy:
 
 
 def is_subpath(path: Path, parent: Path) -> bool:
-    """Return whether path equals parent or is beneath it, without resolving either."""
+    """Return whether path equals parent or is lexically beneath it, without resolving."""
     try:
         path.relative_to(parent)
         return True
@@ -124,10 +125,10 @@ def is_subpath(path: Path, parent: Path) -> bool:
 
 
 def resolve_candidate_path(raw_path: str, base_dir: Path) -> Path:
-    """Expand a home prefix and resolve relative paths against base_dir.
+    """Expand a leading tilde and resolve relative paths against base_dir.
 
-    Follow symlinks and normalize parent components without requiring the target
-    to exist. Path resolution errors propagate to the caller.
+    Resolve symlinks and parent components without requiring the path to exist.
+    Home expansion and path resolution errors propagate to the caller.
     """
     expanded = os.path.expanduser(raw_path)
     p = Path(expanded)
@@ -137,15 +138,15 @@ def resolve_candidate_path(raw_path: str, base_dir: Path) -> Path:
 
 
 def is_allowed_global_skill_read(resolved: Path) -> bool:
-    """Return whether the POSIX path contains a configured global skill/plugin marker."""
+    """Return whether the path contains a configured global skill/plugin substring."""
     posix = resolved.as_posix()
     return any(suffix in posix for suffix in ALLOWED_GLOBAL_READ_SUFFIXES)
 
 
 def match_rel_path_entry(rel_posix: str, entry: str) -> bool:
-    """Match an exact relative path or its descendants, ignoring entry's edge slashes.
+    """Match a literal workspace-relative path or its descendants, without globbing.
 
-    Empty entries do not match; entries are literal paths, not glob patterns.
+    Ignore leading and trailing slashes in entry; an empty entry never matches.
     """
     norm = entry.strip("/")
     if not norm:
@@ -161,11 +162,12 @@ def check_workspace_rel_policy(
     policy: Policy,
     is_write: bool,
 ) -> tuple[str, str] | None:
-    """Return a workspace path's denial or write-confirmation decision and reason.
+    """Return a workspace path's decision and reason, or None if unrestricted.
 
-    Private .env-prefixed names are denied except .env.example, .env.sample, and
-    .env.template; deny_paths take precedence over ask_write_paths. Return None
-    when no restriction applies. Raise ValueError if resolved is outside the root.
+    Deny private .env-prefixed names except .env.example, .env.sample, and
+    .env.template, then apply deny_paths before ask_write_paths. The latter
+    applies only when is_write is true. Raise ValueError if resolved is not
+    beneath workspace_root or equal to it.
     """
     rel = resolved.relative_to(workspace_root).as_posix()
     name = resolved.name
@@ -205,12 +207,13 @@ def references_outside_workspace(
     workspace_roots: list[Path],
     artifact_dir: Path | None,
 ) -> str | None:
-    """Return a reason for a detected outside path, or None if none is detected.
+    """Return a reason for a detected outside path reference, or None.
 
-    Check home references, parent traversal, and absolute tokens, allowing workspace
-    and artifact paths plus /dev/null and standard binary directories. Unmatched
-    shell quotes fall back to whitespace splitting; this is not a full shell parse.
-    Path resolution errors propagate to the caller.
+    Home references always require review. Parent-relative paths are resolved
+    against cwd; workspace and artifact paths are exempt, as are absolute paths
+    under the permitted system prefixes. This is a heuristic, not a shell parser:
+    malformed quoting falls back to whitespace splitting. Path resolution errors
+    propagate to the caller.
     """
     if re.search(r"(?:^|[\s><=|])~(?:/|$|\s)", cmd) or "$HOME" in cmd or "${HOME}" in cmd:
         return "Command references the host home directory (`~` or `$HOME`) outside the project folder."
@@ -265,13 +268,14 @@ def check_shell_path_policy(
     workspace_roots: list[Path],
     policy: Policy,
 ) -> tuple[str, str] | None:
-    """Return a path restriction and reason, or None when no restriction is found.
+    """Return a shell path decision and reason, or None if no restriction matches.
 
-    Check literal operands and glob matches against workspace policy, resolving
-    paths from cwd and tracking cd targets with at most one glob match. Treat both
-    input and output redirection targets as writes. Denials override pending
-    confirmation decisions; malformed shell quoting returns ask. Path resolution
-    errors propagate to the caller. The command is not executed.
+    Check literal operands, option values, adjacent redirections, and glob
+    matches against workspace policy, tracking simple cd targets from cwd.
+    Both input and output redirection targets count as writes for ask_write_paths.
+    Denials take priority over confirmation;
+    changing directory outside all workspaces requires confirmation.
+    Malformed quoting returns an ask decision; path resolution errors propagate.
     """
     lexer = shlex.shlex(cmd, posix=True, punctuation_chars=";&|<>")
     lexer.whitespace_split = True
@@ -323,11 +327,11 @@ def check_shell_path_policy(
 
 
 def shell_segments(cmd: str) -> list[str]:
-    """Return stripped nonempty command segments eligible for allow-rule matching.
+    """Return nonempty, stripped command segments eligible for allow-rule checks.
 
-    Return an empty list for expansion, redirection, newline, parenthesis, or glob
-    characters, and for chains containing cd with separators other than &&.
-    Segments are not checked against policy here.
+    Return an empty list for expansions, redirections, globs, grouping, or line
+    breaks. Chains containing cd qualify only when joined with &&. This does
+    not check whether the individual segments match an allow rule.
     """
     if any(char in cmd for char in ("$", "`", "<", ">", "\n", "\r", "(", ")", "*", "?", "[", "]")):
         return []
@@ -341,19 +345,20 @@ def shell_segments(cmd: str) -> list[str]:
 
 
 def evaluate_tool_call(data: dict[str, Any]) -> dict[str, Any]:
-    """Read merged policy and return a PreToolUse decision with an optional reason.
+    """Evaluate a PreToolUse payload without executing the requested operation.
 
-    Resolve workspacePaths from the payload, falling back to the enclosing
-    workspace for a direct agent-directory installation or the current directory.
-    Relative file targets and command working directories use the first root.
-    artifactDirectoryPath permits file access and command working directories
-    outside those roots; matching global skill paths permit reads only.
+    Read workspacePaths, optional artifactDirectoryPath, and toolCall name/args.
+    Relative file targets use the first workspace; shell paths use Cwd. Missing
+    workspaces fall back to the enclosing project for an installation directly
+    under an agent directory, or otherwise to the process working directory.
+    Artifact paths permit file access and command working directories outside
+    workspace roots; matching global skill paths permit reads only.
 
-    Return deny or force_ask for restrictions, auto_approve for permitted file
-    access or fully allowed simple command chains, and ask for other commands.
-    Unhandled tools and file tools without a target return allow. Policy loading
-    failures become force_ask; malformed payload and path resolution errors can
-    propagate to the caller. No requested tool operation is executed.
+    Return a decision of deny, force_ask, auto_approve, ask, or allow, with a
+    reason for denials and review requests. Tools without recognized names or
+    argument keys, and file tools without a usable target, return allow.
+    PolicyConfigError becomes force_ask; other errors, including malformed payload
+    structure and path resolution failures, propagate for the hook entry point.
     """
     raw_workspaces = data.get("workspacePaths") or []
     workspace_roots = [
@@ -467,14 +472,20 @@ def evaluate_tool_call(data: dict[str, Any]) -> dict[str, Any]:
 
         resolved = resolve_candidate_path(raw_target, primary_root)
 
+        workspace_decision: dict[str, Any] | None = None
         for root in workspace_roots:
             if is_subpath(resolved, root):
                 rel_decision = check_workspace_rel_policy(
                     resolved, root, policy, is_write=is_write
                 )
                 if rel_decision is not None:
-                    return {"decision": rel_decision[0], "reason": rel_decision[1]}
-                return {"decision": "auto_approve"}
+                    if rel_decision[0] == "deny":
+                        return {"decision": rel_decision[0], "reason": rel_decision[1]}
+                    workspace_decision = {"decision": rel_decision[0], "reason": rel_decision[1]}
+                elif workspace_decision is None:
+                    workspace_decision = {"decision": "auto_approve"}
+        if workspace_decision is not None:
+            return workspace_decision
 
         if artifact_dir is not None and is_subpath(resolved, artifact_dir):
             return {"decision": "auto_approve"}
@@ -572,10 +583,11 @@ def run_self_test(ws_path: Path) -> int:
 def main() -> None:
     """Read a hook payload from stdin and write one JSON decision to stdout.
 
-    Empty input returns allow; input read or JSON parse errors return ask, and
-    evaluation errors return force_ask. Output errors propagate. With --self-test
-    and an optional workspace path, run the built-in checks and raise SystemExit
-    with their status (0 for success, 1 for the first decision mismatch).
+    Empty input returns allow; input read/JSON errors return ask. Evaluation
+    errors return force_ask; output errors propagate. With --self-test
+    [workspace_path], run the built-in checks instead, defaulting to the current
+    directory, and raise SystemExit with their status (0 for success, 1 for a
+    decision mismatch).
     """
     if len(sys.argv) > 1 and sys.argv[1] == "--self-test":
         target_ws = Path(sys.argv[2]) if len(sys.argv) > 2 else Path.cwd()
