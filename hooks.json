@@ -1,0 +1,17 @@
+{
+  "agy-auto-mode-ish-gate": {
+    "enabled": true,
+    "PreToolUse": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ./scripts/permission_gate.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
